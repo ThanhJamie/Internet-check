@@ -1,11 +1,11 @@
-import React, { useState, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { TestState } from './types';
 import { measurePing, measureDownloadSpeed, measureUploadSpeed } from './services/speedTestService';
 import SpeedGauge from './components/SpeedGauge';
 import ResultDisplay from './components/ResultDisplay';
 import HistoryChart from './components/HistoryChart';
 import NetworkStatus from './components/NetworkStatus';
-import { INITIAL_GAUGE_MAX_SPEED, TEST_FILE_URL, UPLOAD_TEST_URL, SettingsIcon } from './constants';
+import { INITIAL_GAUGE_MAX_SPEED, TEST_FILE_URL, UPLOAD_TEST_URL, SettingsIcon, EnterFullScreenIcon, ExitFullScreenIcon } from './constants';
 import ContinuousPingTool from './components/ContinuousPingTool';
 import ViewSwitcher from './components/ViewSwitcher';
 
@@ -32,6 +32,27 @@ const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [customDownloadUrl, setCustomDownloadUrl] = useState(TEST_FILE_URL);
   const [customUploadUrl, setCustomUploadUrl] = useState(UPLOAD_TEST_URL);
+  const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
+
+  const toggleFullScreen = useCallback(() => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch((err) => {
+        console.error(`Error attempting to enable full-screen mode: ${err.message} (${err.name})`);
+      });
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const onFullScreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', onFullScreenChange);
+    return () => document.removeEventListener('fullscreenchange', onFullScreenChange);
+  }, []);
 
   const isTesting = useMemo(() => 
     [TestState.TESTING_PING, TestState.TESTING_DOWNLOAD, TestState.TESTING_UPLOAD].includes(testState),
@@ -136,7 +157,16 @@ const App: React.FC = () => {
 
   return (
     <div className="bg-dark-bg min-h-screen text-text-light flex flex-col items-center p-4 font-sans">
-      <NetworkStatus />
+      <div className="absolute top-4 right-4 flex items-center space-x-2 z-10">
+        <button 
+          onClick={toggleFullScreen} 
+          className="bg-light-bg p-2 rounded-full shadow-lg text-text-light hover:text-primary transition-colors" 
+          aria-label="Toggle Fullscreen"
+        >
+          {isFullscreen ? <ExitFullScreenIcon /> : <EnterFullScreenIcon />}
+        </button>
+        <NetworkStatus />
+      </div>
       <header className="w-full max-w-4xl text-center mb-6">
         <div className="flex justify-center items-center relative">
           <h1 className="text-4xl md:text-5xl font-bold">Internet Speed Test</h1>
@@ -154,7 +184,7 @@ const App: React.FC = () => {
         <ViewSwitcher currentView={view} onViewChange={setView} />
       </header>
 
-      <main className="flex flex-col items-center justify-center flex-grow w-full max-w-4xl">
+      <main className={`flex flex-col items-center justify-center flex-grow w-full transition-all duration-300 ${view === 'speedtest' ? 'max-w-4xl' : 'max-w-7xl'}`}>
         {view === 'speedtest' ? (
           <>
             {showSettings && (

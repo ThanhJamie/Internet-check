@@ -20,7 +20,7 @@ const NetworkStatus: React.FC = () => {
     const statusText = isOnline ? 'Online' : 'Offline';
 
     return (
-        <div className="absolute top-4 right-4 flex items-center space-x-2 bg-light-bg p-2 rounded-full shadow-lg z-10">
+        <div className="flex items-center space-x-2 bg-light-bg p-2 rounded-full shadow-lg">
             <span className={`w-3 h-3 rounded-full ${statusColor} animate-pulse`}></span>
             <span className="text-sm font-medium text-text-light">{statusText}</span>
         </div>

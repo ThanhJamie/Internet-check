@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { ContinuousPing, PingUpdate } from '../services/speedTestService';
-import { LineChart, Line, YAxis, ResponsiveContainer, XAxis } from 'recharts';
+import { LineChart, Line, YAxis, ResponsiveContainer, XAxis, Text } from 'recharts';
+import { ExpandIcon, CloseIcon } from '../constants';
 
 interface LogEntry {
     type: 'reply' | 'timeout' | 'error' | 'info';
@@ -61,22 +62,57 @@ const LatencyDistributionChart: React.FC<{ distribution: Record<string, number>;
     );
 };
 
-const RealTimeLatencyChart: React.FC<{ data: LatencyHistoryPoint[] }> = ({ data }) => (
-    <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}>
-            <YAxis stroke="#BDBDBD" domain={['dataMin - 10', 'dataMax + 10']} tick={{ fontSize: 12 }} />
-            <XAxis dataKey="sequence" hide />
-            <Line
-                type="monotone"
-                dataKey="latency"
-                stroke="#00B8A9"
-                strokeWidth={2}
-                dot={false}
-                isAnimationActive={false}
-            />
-        </LineChart>
-    </ResponsiveContainer>
-);
+const RealTimeLatencyChart: React.FC<{ data: LatencyHistoryPoint[]; maxLatencyInHistory: number; }> = ({ data, maxLatencyInHistory }) => {
+    
+    const CustomDot = (props: any) => {
+        const { cx, cy, payload } = props;
+
+        // Show dot and label only for the peak value in the current dataset
+        if (payload.latency === maxLatencyInHistory && maxLatencyInHistory > 0) {
+            return (
+                <g>
+                    <circle cx={cx} cy={cy} r={4} stroke="#F6416C" strokeWidth={2} fill="#222831" />
+                    <Text 
+                        x={cx} 
+                        y={cy - 12} 
+                        textAnchor="middle" 
+                        fill="#EEEEEE" 
+                        fontSize="12px"
+                        className="font-mono font-bold"
+                    >
+                        {Math.round(payload.latency)}
+                    </Text>
+                </g>
+            );
+        }
+        return null;
+    };
+
+    return (
+        <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={data} margin={{ top: 20, right: 5, left: -25, bottom: 5 }}>
+                <YAxis
+                    stroke="#BDBDBD"
+                    domain={[0, (dataMax: number) => Math.max(dataMax * 1.2, 50)]}
+                    tick={{ fontSize: 12 }}
+                    tickFormatter={(tick) => String(Math.round(tick))}
+                    allowDataOverflow={true}
+                />
+                <XAxis dataKey="sequence" hide />
+                <Line
+                    type="monotone"
+                    dataKey="latency"
+                    stroke="#00B8A9"
+                    strokeWidth={2}
+                    dot={<CustomDot />}
+                    activeDot={false}
+                    isAnimationActive={false}
+                />
+            </LineChart>
+        </ResponsiveContainer>
+    )
+};
+
 
 const ContinuousPingTool: React.FC = () => {
     const [targetUrl, setTargetUrl] = useState('one.one.one.one');
@@ -85,10 +121,12 @@ const ContinuousPingTool: React.FC = () => {
     const [stats, setStats] = useState({ sent: 0, received: 0, lost: 0, min: Infinity, max: -Infinity, totalLatency: 0 });
     const [latencyDistribution, setLatencyDistribution] = useState({ excellent: 0, good: 0, fair: 0, poor: 0 });
     const [latencyHistory, setLatencyHistory] = useState<LatencyHistoryPoint[]>([]);
+    const [isChartModalOpen, setIsChartModalOpen] = useState(false);
     
     const pingTesterRef = useRef<ContinuousPing | null>(null);
     const logContainerRef = useRef<HTMLDivElement>(null);
     const latenciesRef = useRef<number[]>([]);
+    const firstPingIgnored = useRef(false);
 
     const calculateJitter = (latencies: number[]): number => {
         if (latencies.length < 2) return 0;
@@ -104,27 +142,34 @@ const ContinuousPingTool: React.FC = () => {
             const newStats = { ...prev, sent: prev.sent + 1 };
 
             if (update.type === 'reply' && update.latency !== undefined) {
-                logEntry = { type: 'reply', message: `Reply from ${targetUrl}: time=${update.latency.toFixed(0)}ms` };
-                newStats.received++;
-                newStats.totalLatency += update.latency;
-                newStats.min = Math.min(newStats.min, update.latency);
-                newStats.max = Math.max(newStats.max, update.latency);
-                
-                latenciesRef.current = [...latenciesRef.current, update.latency];
-                if (latenciesRef.current.length > 100) latenciesRef.current.shift();
-
+                // Always add to chart history
                 const newHistoryPoint = { sequence: newStats.sent, latency: update.latency };
                 setLatencyHistory(prevHistory => [...prevHistory.slice(-59), newHistoryPoint]);
 
-                setLatencyDistribution(dist => {
-                    const newDist = {...dist};
-                    if (update.latency < 30) newDist.excellent++;
-                    else if (update.latency < 100) newDist.good++;
-                    else if (update.latency < 250) newDist.fair++;
-                    else newDist.poor++;
-                    return newDist;
-                });
+                // But only include in stats after the first warm-up ping
+                if (!firstPingIgnored.current) {
+                    firstPingIgnored.current = true;
+                    logEntry = { type: 'info', message: `First reply from ${targetUrl}: ${update.latency.toFixed(0)}ms (warm-up, excluded from stats)` };
+                    newStats.received++; // still counts as received
+                } else {
+                    logEntry = { type: 'reply', message: `Reply from ${targetUrl}: time=${update.latency.toFixed(0)}ms` };
+                    newStats.received++;
+                    newStats.totalLatency += update.latency;
+                    newStats.min = Math.min(newStats.min, update.latency);
+                    newStats.max = Math.max(newStats.max, update.latency);
+                    
+                    latenciesRef.current = [...latenciesRef.current, update.latency];
+                    if (latenciesRef.current.length > 100) latenciesRef.current.shift();
 
+                    setLatencyDistribution(dist => {
+                        const newDist = {...dist};
+                        if (update.latency < 30) newDist.excellent++;
+                        else if (update.latency < 100) newDist.good++;
+                        else if (update.latency < 250) newDist.fair++;
+                        else newDist.poor++;
+                        return newDist;
+                    });
+                }
             } else if (update.type === 'timeout') {
                 logEntry = { type: 'timeout', message: `Request timed out.` };
                 newStats.lost++;
@@ -148,6 +193,7 @@ const ContinuousPingTool: React.FC = () => {
             setPingLog([{ type: 'error', message: 'Please enter a valid URL or hostname.' }]);
             return;
         }
+        firstPingIgnored.current = false;
         setIsPinging(true);
         setPingLog([{ type: 'info', message: `Pinging ${targetUrl}...` }]);
         setStats({ sent: 0, received: 0, lost: 0, min: Infinity, max: -Infinity, totalLatency: 0 });
@@ -167,7 +213,8 @@ const ContinuousPingTool: React.FC = () => {
         }
         setPingLog(prev => [...prev, { type: 'info', message: `--- Ping statistics for ${targetUrl} stopped ---` }]);
     };
-
+    
+    const maxLatencyInHistory = latencyHistory.length > 0 ? Math.max(...latencyHistory.map(p => p.latency)) : 0;
     const avgLatency = stats.received > 0 ? (stats.totalLatency / stats.received).toFixed(0) : '0';
     const packetLoss = stats.sent > 0 ? ((stats.lost / stats.sent) * 100).toFixed(0) : '0';
     const jitter = calculateJitter(latenciesRef.current).toFixed(0);
@@ -182,7 +229,7 @@ const ContinuousPingTool: React.FC = () => {
     };
 
     return (
-        <div className="w-full max-w-4xl p-4 bg-light-bg rounded-lg shadow-xl animate-fade-in">
+        <div className="w-full p-4 bg-light-bg rounded-lg shadow-xl animate-fade-in">
             <h3 className="text-xl font-bold text-text-light mb-2 text-center">Live Ping</h3>
             <p className="text-xs text-text-dark text-center mb-4">
                 Measures HTTP/S latency to a host, which can differ from a standard ICMP ping.
@@ -236,9 +283,18 @@ const ContinuousPingTool: React.FC = () => {
                  <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
                     {/* Real-time Analysis */}
                     <div className="p-4 bg-dark-bg/50 rounded-md">
-                        <h4 className="font-bold text-text-light mb-3 text-center">Real-time Analysis</h4>
+                        <div className="flex justify-center items-center relative mb-3">
+                            <h4 className="font-bold text-text-light text-center">Real-time Analysis</h4>
+                            <button 
+                                onClick={() => setIsChartModalOpen(true)}
+                                className="absolute right-0 top-1/2 -translate-y-1/2 text-text-dark hover:text-primary transition-colors p-1"
+                                aria-label="Expand chart"
+                            >
+                                <ExpandIcon />
+                            </button>
+                        </div>
                         <div className="h-32 mb-4">
-                           <RealTimeLatencyChart data={latencyHistory} />
+                           <RealTimeLatencyChart data={latencyHistory} maxLatencyInHistory={maxLatencyInHistory} />
                         </div>
                         <div className="grid grid-cols-2 gap-3 text-center">
                             <StatDisplay label="Minimum" value={stats.min === Infinity ? '--' : stats.min.toFixed(0)} unit="ms" />
@@ -271,6 +327,34 @@ const ContinuousPingTool: React.FC = () => {
                     </div>
                 </details>
             </div>
+            {isChartModalOpen && (
+                <div 
+                    className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in"
+                    onClick={() => setIsChartModalOpen(false)}
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="chart-modal-title"
+                >
+                    <div 
+                        className="bg-light-bg w-[95vw] h-[90vh] max-w-7xl p-6 rounded-xl shadow-2xl flex flex-col"
+                        onClick={(e) => e.stopPropagation()} // Prevent closing when clicking inside
+                    >
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 id="chart-modal-title" className="text-2xl font-bold text-text-light">Real-time Latency Analysis</h3>
+                            <button 
+                                onClick={() => setIsChartModalOpen(false)}
+                                className="text-text-dark hover:text-primary transition-colors"
+                                aria-label="Close detailed view"
+                            >
+                                <CloseIcon />
+                            </button>
+                        </div>
+                        <div className="flex-grow">
+                            <RealTimeLatencyChart data={latencyHistory} maxLatencyInHistory={maxLatencyInHistory} />
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
