@@ -1,13 +1,14 @@
-import { PING_SAMPLES, TEST_FILE_URL, UPLOAD_TEST_URL, UPLOAD_BLOB_SIZE_BYTES } from '../constants';
 
-const getTestUrlWithCacheBuster = (baseUrl: string) => `${baseUrl}?t=${new Date().getTime()}`;
+import { PING_SAMPLES, UPLOAD_BLOB_SIZE_BYTES } from '../constants';
 
-export const measurePing = async (onProgress: (progress: { latency: number; sample: number }) => void): Promise<{ ping: number; jitter: number }> => {
+export const getTestUrlWithCacheBuster = (baseUrl: string) => `${baseUrl}?t=${new Date().getTime()}`;
+
+export const measurePing = async (url: string, onProgress: (progress: { latency: number; sample: number }) => void): Promise<{ ping: number; jitter: number }> => {
     const latencies: number[] = [];
     for (let i = 0; i < PING_SAMPLES; i++) {
         const startTime = performance.now();
         try {
-            await fetch(getTestUrlWithCacheBuster(TEST_FILE_URL), { method: 'HEAD', cache: 'no-store' });
+            await fetch(getTestUrlWithCacheBuster(url), { method: 'HEAD', cache: 'no-store', mode: 'no-cors' });
             const endTime = performance.now();
             const latency = endTime - startTime;
             latencies.push(latency);
@@ -29,63 +30,50 @@ export const measurePing = async (onProgress: (progress: { latency: number; samp
 };
 
 
-export const measureDownloadSpeed = (onProgress: (progress: { speed: number }) => void): Promise<number> => {
-    return new Promise(async (resolve, reject) => {
-        const url = getTestUrlWithCacheBuster(TEST_FILE_URL);
+export const measureDownloadSpeed = (url: string, onProgress: (progress: { speed: number }) => void): Promise<number> => {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        const testUrl = getTestUrlWithCacheBuster(url);
         const startTime = performance.now();
-        let bytesLoaded = 0;
 
-        try {
-            const response = await fetch(url, { cache: 'no-store' });
-            if (!response.body) {
-                reject(new Error("Response body is null"));
-                return;
-            }
+        xhr.open('GET', testUrl, true);
+        xhr.timeout = 15000; // 15s timeout for the entire request
 
-            const reader = response.body.getReader();
-            const contentLength = +(response.headers.get('Content-Length') || 0);
-
-            const read = async () => {
-                try {
-                    const { done, value } = await reader.read();
-                    if (done) {
-                        const endTime = performance.now();
-                        const durationInSeconds = (endTime - startTime) / 1000;
-                        const totalBytes = contentLength > 0 ? contentLength : bytesLoaded;
-                        const totalBits = totalBytes * 8;
-                        const speedBps = totalBits / durationInSeconds;
-                        const speedMbps = speedBps / 1_000_000;
-                        onProgress({ speed: speedMbps });
-                        resolve(speedMbps);
-                        return;
-                    }
-
-                    bytesLoaded += value.length;
-                    const elapsedTime = (performance.now() - startTime) / 1000;
-                    if (elapsedTime > 0.2) { // Update frequently
-                        const speedBps = (bytesLoaded * 8) / elapsedTime;
-                        const speedMbps = speedBps / 1_000_000;
-                        onProgress({ speed: speedMbps });
-                    }
-
-                    read();
-                } catch (e) {
-                    reject(e);
+        xhr.onprogress = (event) => {
+            if (event.lengthComputable) {
+                const elapsedTime = (performance.now() - startTime) / 1000;
+                if (elapsedTime > 0.2) { // Update frequently
+                    const speedBps = (event.loaded * 8) / elapsedTime;
+                    const speedMbps = speedBps / 1_000_000;
+                    onProgress({ speed: speedMbps });
                 }
-            };
+            }
+        };
 
-            read();
+        // FIX: Add the 'event' parameter to the onload callback to correctly access its properties.
+        xhr.onload = (event) => {
+            const endTime = performance.now();
+            const durationInSeconds = (endTime - startTime) / 1000;
+            const totalBytes = event.total || event.loaded;
+            const totalBits = totalBytes * 8;
+            const speedBps = durationInSeconds > 0 ? totalBits / durationInSeconds : 0;
+            const speedMbps = speedBps / 1_000_000;
+            onProgress({ speed: speedMbps });
+            resolve(speedMbps);
+        };
 
-        } catch (e) {
-            reject(e);
-        }
+        xhr.onerror = () => reject(new Error('Download test failed due to a network error.'));
+        xhr.ontimeout = () => reject(new Error('Download test timed out. The server might be slow or the connection is poor.'));
+        xhr.onabort = () => reject(new Error('Download test was aborted.'));
+
+        xhr.send();
     });
 };
 
-export const measureUploadSpeed = (onProgress: (progress: { speed: number }) => void): Promise<number> => {
+export const measureUploadSpeed = (url: string, onProgress: (progress: { speed: number }) => void): Promise<number> => {
     return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        const url = getTestUrlWithCacheBuster(UPLOAD_TEST_URL);
+        const testUrl = getTestUrlWithCacheBuster(url);
         const data = new Blob([new Uint8Array(UPLOAD_BLOB_SIZE_BYTES)], { type: 'application/octet-stream' });
         const startTime = performance.now();
         
@@ -111,22 +99,93 @@ export const measureUploadSpeed = (onProgress: (progress: { speed: number }) => 
         };
         
         xhr.onerror = () => {
-             // Even on error, we can resolve with the calculated speed up to that point
-             // as we are measuring the client's upload capability.
-            const endTime = performance.now();
-            const durationInSeconds = (endTime - startTime) / 1000;
-            const totalBits = data.size * 8;
-            const speedBps = durationInSeconds > 0 ? totalBits / durationInSeconds : 0;
-            const speedMbps = speedBps / 1_000_000;
-            console.warn("Upload test finished with an error, but resolving with measured speed.");
-            resolve(speedMbps);
+            reject(new Error('Upload test failed. Check CORS policy on the server or your network connection.'));
+        };
+
+        xhr.ontimeout = () => {
+            reject(new Error('Upload test timed out. The server might be slow or the connection is poor.'));
         };
         
         xhr.onabort = () => {
-            reject(new Error('Upload test aborted.'));
+            reject(new Error('Upload test was aborted.'));
         };
 
-        xhr.open('POST', url, true);
+        xhr.open('POST', testUrl, true);
+        xhr.timeout = 15000; // 15 seconds
         xhr.send(data);
     });
 };
+
+export interface PingUpdate {
+  type: 'reply' | 'timeout' | 'error';
+  sequence: number;
+  latency?: number;
+  message?: string;
+}
+
+export class ContinuousPing {
+  private url: string;
+  private onUpdate: (update: PingUpdate) => void;
+  private intervalId: number | null = null;
+  private sequence = 0;
+  private running = false;
+  private timeout = 2000; // 2 seconds per ping request
+
+  constructor(url: string, onUpdate: (update: PingUpdate) => void) {
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        this.url = `https://${url}`;
+    } else {
+        this.url = url;
+    }
+    this.onUpdate = onUpdate;
+  }
+
+  public start() {
+    if (this.running) return;
+    this.running = true;
+    this.sequence = 0;
+    this.ping();
+    this.intervalId = window.setInterval(() => this.ping(), 1000);
+  }
+
+  public stop() {
+    this.running = false;
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
+  }
+
+  private async ping() {
+    if (!this.running) return;
+
+    const startTime = performance.now();
+    this.sequence++;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+
+    try {
+      await fetch(getTestUrlWithCacheBuster(this.url), {
+        method: 'HEAD',
+        cache: 'no-store',
+        signal: controller.signal,
+        mode: 'no-cors',
+      });
+      clearTimeout(timeoutId);
+      const endTime = performance.now();
+      const latency = endTime - startTime;
+      if (this.running) {
+        this.onUpdate({ type: 'reply', sequence: this.sequence, latency });
+      }
+    } catch (e: any) {
+      clearTimeout(timeoutId);
+      if (!this.running) return;
+
+      if (e.name === 'AbortError') {
+        this.onUpdate({ type: 'timeout', sequence: this.sequence });
+      } else {
+        this.onUpdate({ type: 'error', sequence: this.sequence, message: e.message });
+      }
+    }
+  }
+}
