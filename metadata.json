@@ -1,0 +1,5 @@
+{
+  "name": "Internet Speed Test",
+  "description": "A web application to measure your internet download speed and latency (ping). It provides real-time speed visualization with a gauge and displays the final results.",
+  "requestFramePermissions": []
+}
